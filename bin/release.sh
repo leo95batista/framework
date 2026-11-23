@@ -52,13 +52,13 @@ git tag $VERSION
 git push origin --tags
 
 # Tag Components
-for REMOTE in auth broadcasting bus cache collections conditionable config console container contracts cookie database encryption events filesystem hashing http json-schema log macroable mail notifications pagination pipeline process queue reflection redis routing session support testing translation validation view
+for REMOTE in auth broadcasting bus cache collections concurrency conditionable config console container contracts cookie database encryption events filesystem hashing http image json-schema log macroable mail notifications pagination pipeline process queue reflection redis routing session support testing translation validation view
 do
     echo ""
     echo ""
     echo "Releasing $REMOTE";
 
-    TMP_DIR="/tmp/laravel-split"
+    TMP_DIR="/tmp/laravel-split-$VERSION"
     REMOTE_URL="git@github.com:illuminate/$REMOTE.git"
 
     rm -rf $TMP_DIR;

@@ -4,8 +4,12 @@ namespace Illuminate\Tests\Integration\Console\Scheduling;
 
 use Illuminate\Console\Events\ScheduledTaskFailed;
 use Illuminate\Console\Events\ScheduledTaskFinished;
+use Illuminate\Console\Events\ScheduledTaskSkipped;
 use Illuminate\Console\Events\ScheduledTaskStarting;
+use Illuminate\Console\Scheduling\CacheSchedulingMutex;
+use Illuminate\Console\Scheduling\EventMutex;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Console\Scheduling\ScheduledTaskSkipReason;
 use Illuminate\Console\Scheduling\ScheduleRunCommand;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Support\Carbon;
@@ -16,19 +20,6 @@ use ReflectionProperty;
 
 class ScheduleRunCommandTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-        Carbon::setTestNow(Carbon::now());
-    }
-
-    protected function tearDown(): void
-    {
-        Carbon::setTestNow();
-
-        parent::tearDown();
-    }
-
     /**
      * @throws BindingResolutionException
      */
@@ -58,7 +49,8 @@ class ScheduleRunCommandTest extends TestCase
         Event::assertDispatched(ScheduledTaskFinished::class);
         Event::assertDispatched(ScheduledTaskFailed::class, function ($event) use ($task) {
             return $event->task === $task &&
-                   $event->exception->getMessage() === 'Scheduled command [exit 1] failed with exit code [1].';
+                   $event->exception->getMessage() === 'Scheduled command [exit 1] failed with exit code [1].' &&
+                   is_float($event->runtime);
         });
     }
 
@@ -185,6 +177,94 @@ class ScheduleRunCommandTest extends TestCase
         Event::assertNotDispatched(ScheduledTaskFailed::class);
     }
 
+    public function test_overlapping_task_finished_event_indicates_skipped()
+    {
+        Event::fake([
+            ScheduledTaskStarting::class,
+            ScheduledTaskFinished::class,
+            ScheduledTaskFailed::class,
+        ]);
+
+        $this->app->instance(EventMutex::class, new class implements EventMutex
+        {
+            public function create(\Illuminate\Console\Scheduling\Event $event)
+            {
+                return false;
+            }
+
+            public function exists(\Illuminate\Console\Scheduling\Event $event)
+            {
+                return false;
+            }
+
+            public function forget(\Illuminate\Console\Scheduling\Event $event)
+            {
+                //
+            }
+        });
+
+        $ran = false;
+        $schedule = $this->app->make(Schedule::class);
+        $task = $schedule->call(function () use (&$ran) {
+            $ran = true;
+        })->name('test')->withoutOverlapping()->everyMinute();
+
+        $this->artisan('schedule:run');
+
+        Event::assertDispatched(ScheduledTaskStarting::class, function ($event) use ($task) {
+            return $event->task === $task;
+        });
+        Event::assertDispatched(ScheduledTaskFinished::class, function ($event) use ($task) {
+            return $event->task === $task &&
+                   $event->task->skippedBecauseOverlapping === true;
+        });
+        Event::assertNotDispatched(ScheduledTaskFailed::class);
+        $this->assertFalse($ran);
+    }
+
+    public function test_task_skipped_event_is_dispatched_when_task_ran_on_another_server()
+    {
+        Event::fake([
+            ScheduledTaskStarting::class,
+            ScheduledTaskFinished::class,
+            ScheduledTaskSkipped::class,
+        ]);
+
+        Carbon::setTestNow(Carbon::now()->startOfMinute());
+
+        $ran = false;
+        $schedule = $this->app->make(Schedule::class);
+        $task = $schedule->call(function () use (&$ran) {
+            $ran = true;
+        })->name('test')->onOneServer()->everyMinute();
+
+        $this->app->make(CacheSchedulingMutex::class)->create($task, Carbon::now());
+
+        $this->artisan('schedule:run');
+
+        Event::assertDispatched(ScheduledTaskSkipped::class, function ($event) use ($task) {
+            return $event->task === $task &&
+                   $event->reason === ScheduledTaskSkipReason::RanOnAnotherServer;
+        });
+        Event::assertNotDispatched(ScheduledTaskStarting::class);
+        Event::assertNotDispatched(ScheduledTaskFinished::class);
+        $this->assertFalse($ran);
+    }
+
+    public function test_task_skipped_event_is_dispatched_when_condition_is_not_met()
+    {
+        Event::fake([ScheduledTaskSkipped::class]);
+
+        $task = $this->app->make(Schedule::class)->call(fn () => null)->everyMinute()->when(fn () => false);
+
+        $this->artisan('schedule:run');
+
+        Event::assertDispatched(ScheduledTaskSkipped::class, function ($event) use ($task) {
+            return $event->task === $task &&
+                   $event->reason === ScheduledTaskSkipReason::ConditionNotMet;
+        });
+    }
+
     /**
      * @throws BindingResolutionException
      */
@@ -226,7 +306,7 @@ class ScheduleRunCommandTest extends TestCase
         $reflection = new ReflectionProperty($command, 'startedAt');
         $startedAt = $reflection->getValue($command);
 
-        $originalTimestamp = $startedAt->timestamp;
+        $originalTimestamp = $startedAt->getTimestamp();
         $originalMicro = $startedAt->micro;
 
         // Call repeatEvents with an empty collection so it exits immediately
@@ -239,7 +319,7 @@ class ScheduleRunCommandTest extends TestCase
 
         // startedAt should not have been mutated to end of minute
         $startedAtAfter = (new ReflectionProperty($command, 'startedAt'))->getValue($command);
-        $this->assertEquals($originalTimestamp, $startedAtAfter->timestamp);
+        $this->assertEquals($originalTimestamp, $startedAtAfter->getTimestamp());
         $this->assertEquals($originalMicro, $startedAtAfter->micro);
     }
 }

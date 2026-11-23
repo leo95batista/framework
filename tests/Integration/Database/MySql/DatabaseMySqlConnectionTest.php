@@ -6,6 +6,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Orchestra\Testbench\Attributes\RequiresDatabase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresOperatingSystem;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
@@ -84,6 +85,18 @@ class DatabaseMySqlConnectionTest extends MySqlTestCase
         $this->assertSame(! $expected, DB::table(self::TABLE)->whereNotNull(self::JSON_COL.'->'.$key)->exists());
     }
 
+    #[DataProvider('jsonWhereNullDataProvider')]
+    #[RequiresDatabase('mysql', '>=8.0')]
+    public function testJsonWhereNullWithBinaryConnectionCollation($expected, $key, array $value = ['value' => 123])
+    {
+        DB::table(self::TABLE)->insert([self::JSON_COL => json_encode($value)]);
+
+        DB::statement('set names utf8mb4 collate utf8mb4_0900_bin');
+
+        $this->assertSame($expected, DB::table(self::TABLE)->whereNull(self::JSON_COL.'->'.$key)->exists());
+        $this->assertSame(! $expected, DB::table(self::TABLE)->whereNotNull(self::JSON_COL.'->'.$key)->exists());
+    }
+
     public static function jsonWhereNullDataProvider()
     {
         return [
@@ -146,6 +159,18 @@ class DatabaseMySqlConnectionTest extends MySqlTestCase
         ];
     }
 
+    #[RequiresDatabase('mysql', '>=8.0.17')]
+    public function testWhereJsonOverlapsWithPath()
+    {
+        DB::table(self::TABLE)->insert([
+            [self::JSON_COL => '{"languages":["en","de"]}'],
+            [self::JSON_COL => '{"languages":["fr"]}'],
+        ]);
+
+        $this->assertSame(1, DB::table(self::TABLE)->whereJsonOverlaps(self::JSON_COL.'->languages', ['en', 'es'])->count());
+        $this->assertSame(1, DB::table(self::TABLE)->whereJsonDoesntOverlap(self::JSON_COL.'->languages', ['en', 'es'])->count());
+    }
+
     public function testLastInsertIdIsPreserved()
     {
         if (! Schema::hasTable('auto_id_table')) {
@@ -167,5 +192,24 @@ class DatabaseMySqlConnectionTest extends MySqlTestCase
         } finally {
             Schema::drop('auto_id_table');
         }
+    }
+
+    public function testLastCommitReadAfterWrite()
+    {
+        if (! DB::scalar('select @@log_bin') || DB::scalar('select @@global.gtid_mode') !== 'ON') {
+            $this->markTestSkipped('Commit IDs require log_bin = ON and gtid_mode = ON.');
+        }
+
+        $first = DB::getLastCommitId();
+        DB::table(self::TABLE)->insert([self::JSON_COL => '{"commit":"read-after-write"}']);
+        $second = DB::getLastCommitId();
+        $merged = DB::mergeCommitIds([$second, $first]);
+
+        $this->assertNotSame($first, $second);
+        $this->assertSame($second, $merged);
+        $this->assertTrue(DB::hasCommitId($first));
+        $this->assertTrue(DB::hasCommitId($second));
+        $this->assertTrue(DB::hasCommitId($merged));
+        $this->assertFalse(DB::hasCommitId('ffffffff-ffff-ffff-ffff-ffffffffffff:9223372036854775806'));
     }
 }

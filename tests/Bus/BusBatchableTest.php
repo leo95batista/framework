@@ -6,11 +6,14 @@ use Illuminate\Bus\Batchable;
 use Illuminate\Bus\BatchRepository;
 use Illuminate\Container\Container;
 use Illuminate\Support\Testing\Fakes\BatchFake;
-use Mockery as m;
+use JMac\Testing\Double;
+use JMac\Testing\Integrations\PHPUnit\VerifiesDoubles;
 use PHPUnit\Framework\TestCase;
 
 class BusBatchableTest extends TestCase
 {
+    use VerifiesDoubles;
+
     public function test_batch_may_be_retrieved()
     {
         $class = new class
@@ -23,8 +26,8 @@ class BusBatchableTest extends TestCase
 
         Container::setInstance($container = new Container);
 
-        $repository = m::mock(BatchRepository::class);
-        $repository->shouldReceive('find')->once()->with('test-batch-id')->andReturn('test-batch');
+        $repository = Double::for(BatchRepository::class);
+        $repository->expects('find')->with('test-batch-id')->returns('test-batch');
         $container->instance(BatchRepository::class, $repository);
 
         $this->assertSame('test-batch', $class->batch());
@@ -63,6 +66,18 @@ class BusBatchableTest extends TestCase
 
         // Cancel the batch and ensure batching() returns false
         $job->batch()->cancel();
+        $this->assertFalse($job->batching());
+    }
+
+    public function test_batching_returns_false_when_batch_is_finished()
+    {
+        $job = new class
+        {
+            use Batchable;
+        };
+
+        $job->withFakeBatch('test-batch-id', 'test-batch-name', finishedAt: \Carbon\CarbonImmutable::now());
+
         $this->assertFalse($job->batching());
     }
 }

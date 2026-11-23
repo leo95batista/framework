@@ -92,6 +92,25 @@ class EloquentUpdateTest extends DatabaseTestCase
         $this->assertSame('Engineer: Abdul', $record->job.': '.$record->name);
     }
 
+    public function testTouchQualifiesUpdatedAtColumnOnQueriesWithJoins()
+    {
+        TestUpdateModel2::forceCreate([
+            'name' => Str::random(),
+            'updated_at' => '2000-01-01 00:00:00',
+        ]);
+
+        TestUpdateModel3::forceCreate([
+            'counter' => 1,
+            'updated_at' => '2000-01-01 00:00:00',
+        ]);
+
+        $affected = TestUpdateModel2::join('test_model3', 'test_model3.id', '=', 'test_model2.id')->touch();
+
+        $this->assertSame(1, $affected);
+        $this->assertNotSame('2000-01-01 00:00:00', TestUpdateModel2::find(1)->updated_at->toDateTimeString());
+        $this->assertSame('2000-01-01 00:00:00', TestUpdateModel3::find(1)->updated_at->toDateTimeString());
+    }
+
     public function testSoftDeleteWithJoins()
     {
         TestUpdateModel1::create([
@@ -269,7 +288,7 @@ class EloquentUpdateTest extends DatabaseTestCase
         $post->incrementEach(['views' => 1]);
 
         $this->assertTrue($post->isDirty('name'));
-        $this->assertEquals('Changed', $post->name);
+        $this->assertSame('Changed', $post->name);
         $this->assertFalse($post->isDirty('views'));
     }
 
@@ -283,6 +302,23 @@ class EloquentUpdateTest extends DatabaseTestCase
         $this->assertEquals(7, $post->likes);
         $this->assertArrayHasKey('views', $post->getChanges());
         $this->assertArrayHasKey('likes', $post->getChanges());
+    }
+
+    public function testIncrementCastsExtraAttributes()
+    {
+        config(['app.key' => str_repeat('a', 32)]);
+
+        $post = TestUpdateModel5::create(['views' => 10]);
+
+        $post->increment('views', 1, ['name' => 'secret']);
+
+        $this->assertNotSame('secret', TestUpdateModel5::query()->toBase()->value('name'));
+        $this->assertSame('secret', $post->fresh()->name);
+
+        $post->incrementEach(['views' => 1], ['name' => 'another secret']);
+
+        $this->assertNotSame('another secret', TestUpdateModel5::query()->toBase()->value('name'));
+        $this->assertSame('another secret', $post->fresh()->name);
     }
 }
 
@@ -317,4 +353,11 @@ class TestUpdateModel4 extends Model
     public $table = 'test_model4';
     protected $fillable = ['views', 'likes', 'name'];
     protected $casts = ['deleted_at' => 'datetime'];
+}
+
+class TestUpdateModel5 extends Model
+{
+    public $table = 'test_model4';
+    protected $fillable = ['views', 'likes', 'name'];
+    protected $casts = ['name' => 'encrypted'];
 }

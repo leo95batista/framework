@@ -71,6 +71,31 @@ class ValidationEmailRuleTest extends TestCase
         $this->passes(Rule::email(), null);
     }
 
+    public function testEmailLengthLimit()
+    {
+        $localPart = str_repeat('a', 64);
+        $domainAtMaximumLength = implode('.', [
+            str_repeat('a', 62),
+            str_repeat('b', 62),
+            str_repeat('c', 60),
+            str_repeat('d', 2),
+        ]);
+        $domainOverMaximumLength = implode('.', [
+            str_repeat('a', 62),
+            str_repeat('b', 62),
+            str_repeat('c', 62),
+            'd',
+        ]);
+
+        $this->passes('email', $localPart.'@'.$domainAtMaximumLength);
+
+        $this->fails(
+            'email',
+            $localPart.'@'.$domainOverMaximumLength,
+            ['The '.self::ATTRIBUTE_REPLACED.' must be a valid email address.']
+        );
+    }
+
     /**
      * @param  mixed  $rule
      * @param  string|array  $values
@@ -163,6 +188,35 @@ class ValidationEmailRuleTest extends TestCase
         $this->passes(
             Rule::email()->rfcCompliant(strict: true),
             $emailThatPassesBothNonStrictAndInStrict
+        );
+    }
+
+    public function testStrict()
+    {
+        $emailThatFailsInStrict = 'username@sub..example.com';
+        $emailThatPassesNonStrictButFailsInStrict = '"has space"@example.com';
+        $emailThatPassesInStrict = 'plainaddress@example.com';
+
+        $this->fails(
+            (new Email())->strict(),
+            $emailThatPassesNonStrictButFailsInStrict,
+            ['The '.self::ATTRIBUTE_REPLACED.' must be a valid email address.']
+        );
+
+        $this->fails(
+            Rule::email()->strict(),
+            $emailThatFailsInStrict,
+            ['The '.self::ATTRIBUTE_REPLACED.' must be a valid email address.']
+        );
+
+        $this->passes(
+            (new Email())->strict(),
+            $emailThatPassesInStrict
+        );
+
+        $this->passes(
+            Rule::email()->strict(),
+            $emailThatPassesInStrict
         );
     }
 
@@ -899,12 +953,12 @@ class ValidationEmailRuleTest extends TestCase
 
     protected function tearDown(): void
     {
+        Email::$defaultCallback = null;
+
         Container::setInstance(null);
 
         Facade::clearResolvedInstances();
 
         Facade::setFacadeApplication(null);
-
-        parent::tearDown();
     }
 }

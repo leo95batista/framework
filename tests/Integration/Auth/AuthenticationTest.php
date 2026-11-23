@@ -17,6 +17,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Sleep;
 use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\EventFake;
 use Illuminate\Tests\Integration\Auth\Fixtures\AuthenticationTestUser;
@@ -28,6 +29,13 @@ use Orchestra\Testbench\TestCase;
 class AuthenticationTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Sleep::fake();
+    }
 
     protected function defineEnvironment($app)
     {
@@ -145,6 +153,10 @@ class AuthenticationTest extends TestCase
         );
         $this->assertInstanceOf(AuthenticationTestUser::class, $this->app['auth']->user());
         $this->assertTrue($this->app['auth']->check());
+        $this->assertSame(
+            $this->app['auth']->guard()->hashPasswordForCookie($this->app['auth']->user()->getAuthPassword()),
+            $this->app['session']->get('password_hash_web')
+        );
 
         Event::assertDispatched(Attempting::class, function ($event) {
             $this->assertSame('web', $event->guard);
@@ -220,8 +232,7 @@ class AuthenticationTest extends TestCase
 
     public function testPasswordMustBeValidToLogOutOtherDevices()
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('current password');
+        $this->expectExceptionObject(new InvalidArgumentException('current password'));
 
         $this->app['auth']->loginUsingId(1);
 

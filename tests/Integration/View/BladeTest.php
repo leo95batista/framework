@@ -6,9 +6,15 @@ use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\View;
 use Illuminate\View\Component;
-use Mockery;
+use Illuminate\View\ComponentAttributeBag;
+use Illuminate\View\DynamicComponent;
+use Illuminate\View\RawTemplate;
+use Illuminate\View\ViewException;
+use InvalidArgumentException;
 use Orchestra\Testbench\TestCase;
+use PHPUnit\Framework\Attributes\RequiresOperatingSystem;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
+use ReflectionProperty;
 use Symfony\Component\Finder\Finder;
 use Symfony\Component\Finder\SplFileInfo;
 
@@ -18,8 +24,6 @@ use function Orchestra\Testbench\phpunit_version_compare;
 
 class BladeTest extends TestCase
 {
-    /** {@inheritdoc} */
-    #[\Override]
     protected function tearDown(): void
     {
         artisan($this, 'view:clear');
@@ -71,6 +75,29 @@ class BladeTest extends TestCase
         $component = new HelloComponent('Taylor');
 
         $this->assertSame('Hello Taylor', Blade::renderComponent($component));
+    }
+
+    public function test_rendering_raw_template_component_instance()
+    {
+        $component = new RawTemplateHelloComponent('Taylor');
+
+        $this->assertSame('Hello Taylor', Blade::renderComponent($component));
+    }
+
+    public function test_rendering_raw_template_closure_component_instance()
+    {
+        $component = new RawTemplateClosureComponent('Taylor');
+
+        $this->assertSame('Hello Taylor', Blade::renderComponent($component));
+    }
+
+    public function test_raw_template_is_never_resolved_as_a_view_name()
+    {
+        $this->assertTrue(View::exists('hello'));
+
+        $component = new RawTemplateViewNameComponent;
+
+        $this->assertSame('hello', Blade::renderComponent($component));
     }
 
     public function test_basic_blade_rendering()
@@ -209,6 +236,69 @@ class BladeTest extends TestCase
 </div>', trim($content));
     }
 
+    public function test_dynamic_component_slot_attributes_are_not_compiled_as_blade()
+    {
+        $payload = '{{ 7191 * 2 }}';
+
+        $static = Blade::render('<x-input-with-slot>
+    <x-slot:input :data-x="$payload">Test</x-slot:input>
+</x-input-with-slot>', ['payload' => $payload]);
+
+        $dynamic = Blade::render('<x-dynamic-component component="input-with-slot">
+    <x-slot:input :data-x="$payload">Test</x-slot:input>
+</x-dynamic-component>', ['payload' => $payload]);
+
+        $this->assertStringContainsString('data-x="{{ 7191 * 2 }}"', $static);
+        $this->assertStringNotContainsString('14382', $dynamic);
+        $this->assertSame(trim($static), trim($dynamic));
+    }
+
+    public function test_dynamic_component_renders_bound_attributes_like_class_component_tag()
+    {
+        Blade::component('attributes-hello', AttributesHelloComponent::class);
+        (new ReflectionProperty(DynamicComponent::class, 'compiler'))->setValue(null, null);
+
+        $data = [
+            'name' => 'Taylor & Co',
+            'title' => '"Quotes" & <tags>',
+            'bag' => new ComponentAttributeBag(['class' => 'a&amp;b']),
+        ];
+
+        foreach ([':title="$title"', 'title="{{ $title }}"', ':class="$title" :attributes="$bag"'] as $attributes) {
+            $static = Blade::render('<x-attributes-hello :name="$name" '.$attributes.' />', $data);
+            $dynamic = Blade::render('<x-dynamic-component component="attributes-hello" :name="$name" '.$attributes.' />', $data);
+
+            $this->assertSame(trim($static), trim($dynamic));
+        }
+
+        $this->assertSame(
+            '<div title="&quot;Quotes&quot; &amp; &lt;tags&gt;">Hello Taylor &amp; Co</div>',
+            trim(Blade::render('<x-dynamic-component component="attributes-hello" :name="$name" :title="$title" />', $data))
+        );
+    }
+
+    public function test_dynamic_component_names_are_not_compiled_as_blade()
+    {
+        $cases = [
+            ['<x-dynamic-component :component="$payload" />', 'mail::a{{ 7191 * 2 }}'],
+            ['<x-dynamic-component component="link" href="#"><x-slot :name="$payload">inner</x-slot></x-dynamic-component>', 'h"><?php echo 7191 * 2; ?>'],
+            ['<x-dynamic-component component="link" :attributes="new \Illuminate\View\ComponentAttributeBag([\'href\' => \'#\', $payload => 1])" />', "y'])?><?=7191*2?><?php if(0):?>"],
+        ];
+
+        foreach ($cases as [$template, $payload]) {
+            ob_start();
+
+            try {
+                Blade::render($template, ['payload' => $payload]);
+                $this->fail('Expected the invalid name to be rejected.');
+            } catch (ViewException $e) {
+                $this->assertInstanceOf(InvalidArgumentException::class, $e->getPrevious());
+            } finally {
+                $this->assertStringNotContainsString('14382', ob_get_clean());
+            }
+        }
+    }
+
     public function test_no_name_passed_to_slot_uses_default_name()
     {
         $content = Blade::render('<x-link href="#"><x-slot>default slot</x-slot></x-link>');
@@ -248,22 +338,29 @@ class BladeTest extends TestCase
 
     public function test_view_cache_command_deduplicates_paths_before_compiling()
     {
-        View::addNamespace('templates', join_paths(__DIR__, 'templates'));
-        View::addNamespace('components', join_paths(__DIR__, 'templates', 'components'));
+        View::addNamespace('templates', join_paths(__DIR__, 'Fixtures', 'templates'));
+        View::addNamespace('components', join_paths(__DIR__, 'Fixtures', 'templates', 'components'));
 
-        $compiler = Mockery::mock(app('blade.compiler'))->makePartial();
-        $compiler->shouldReceive('compile')->with(realpath(__DIR__.'/templates/components/panel.blade.php'))->once();
-
-        $this->instance('blade.compiler', $compiler);
+        Blade::partialMock()->expects('compile')->with(realpath(__DIR__.'/Fixtures/templates/components/panel.blade.php'));
 
         $this->artisan('view:cache');
+    }
+
+    #[RequiresOperatingSystem('Linux|Darwin')]
+    public function test_view_cache_command_compiles_namespaced_views_at_the_path_they_render_from()
+    {
+        View::addNamespace('components', join_paths(__DIR__, 'Fixtures', 'templates', 'components', '..', 'components'));
+
+        $this->artisan('view:cache');
+
+        $this->assertFileExists(Blade::getCompiledPath(View::getFinder()->find('components::panel')));
     }
 
     /** {@inheritdoc} */
     #[\Override]
     protected function defineEnvironment($app)
     {
-        $app['config']->set('view.paths', [__DIR__.'/templates']);
+        $app['config']->set('view.paths', [__DIR__.'/Fixtures/templates']);
     }
 }
 
@@ -279,5 +376,51 @@ class HelloComponent extends Component
     public function render()
     {
         return 'Hello {{ $name }}';
+    }
+}
+
+class AttributesHelloComponent extends Component
+{
+    public function __construct(public string $name)
+    {
+    }
+
+    public function render()
+    {
+        return '<div {{ $attributes }}>Hello {{ $name }}</div>';
+    }
+}
+
+class RawTemplateHelloComponent extends Component
+{
+    public function __construct(public string $name)
+    {
+    }
+
+    public function render(): RawTemplate
+    {
+        return new RawTemplate('Hello {{ $name }}');
+    }
+}
+
+class RawTemplateClosureComponent extends Component
+{
+    public function __construct(public string $name)
+    {
+    }
+
+    public function render()
+    {
+        return function (array $data) {
+            return new RawTemplate('Hello {{ $name }}');
+        };
+    }
+}
+
+class RawTemplateViewNameComponent extends Component
+{
+    public function render(): RawTemplate
+    {
+        return new RawTemplate('hello');
     }
 }

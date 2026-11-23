@@ -3,11 +3,9 @@
 namespace Illuminate\Tests\Foundation\Console;
 
 use Illuminate\Console\Application;
-use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Foundation\Console\RouteListCommand;
 use Illuminate\Foundation\Http\Kernel;
 use Illuminate\Routing\Router;
-use Mockery as m;
 use PHPUnit\Framework\TestCase;
 
 class RouteListCommandTest extends TestCase
@@ -16,15 +14,13 @@ class RouteListCommandTest extends TestCase
 
     protected function setUp(): void
     {
-        parent::setUp();
-
         $this->app = new Application(
             $laravel = new \Illuminate\Foundation\Application(__DIR__),
-            m::mock(Dispatcher::class, ['dispatch' => null, 'fire' => null]),
+            new \Illuminate\Events\Dispatcher($laravel),
             'testing',
         );
 
-        $router = new Router(m::mock('Illuminate\Events\Dispatcher'));
+        $router = new Router(new \Illuminate\Events\Dispatcher($laravel));
 
         $kernel = new class($laravel, $router) extends Kernel
         {
@@ -80,9 +76,9 @@ class RouteListCommandTest extends TestCase
         $routes = json_decode($output, true);
 
         $this->assertCount(3, $routes);
-        $this->assertEquals('example', $routes[0]['uri']);
-        $this->assertEquals('example-group', $routes[1]['uri']);
-        $this->assertEquals('sub-example', $routes[2]['uri']);
+        $this->assertSame('example', $routes[0]['uri']);
+        $this->assertSame('example-group', $routes[1]['uri']);
+        $this->assertSame('sub-example', $routes[2]['uri']);
 
         foreach ($routes as $route) {
             $this->assertArrayHasKey('path', $route);
@@ -98,9 +94,9 @@ class RouteListCommandTest extends TestCase
         $routes = json_decode($output, true);
 
         $this->assertCount(3, $routes);
-        $this->assertEquals('sub-example', $routes[0]['uri']);
-        $this->assertEquals('example-group', $routes[1]['uri']);
-        $this->assertEquals('example', $routes[2]['uri']);
+        $this->assertSame('sub-example', $routes[0]['uri']);
+        $this->assertSame('example-group', $routes[1]['uri']);
+        $this->assertSame('example', $routes[2]['uri']);
 
         foreach ($routes as $route) {
             $this->assertArrayHasKey('path', $route);
@@ -116,9 +112,9 @@ class RouteListCommandTest extends TestCase
         $routes = json_decode($output, true);
 
         $this->assertCount(3, $routes);
-        $this->assertEquals('example', $routes[0]['uri']);
-        $this->assertEquals('example-group', $routes[1]['uri']);
-        $this->assertEquals('sub-example', $routes[2]['uri']);
+        $this->assertSame('example', $routes[0]['uri']);
+        $this->assertSame('example-group', $routes[1]['uri']);
+        $this->assertSame('sub-example', $routes[2]['uri']);
 
         foreach ($routes as $route) {
             $this->assertArrayHasKey('path', $route);
@@ -134,9 +130,9 @@ class RouteListCommandTest extends TestCase
         $routes = json_decode($output, true);
 
         $this->assertCount(3, $routes);
-        $this->assertEquals('example', $routes[0]['uri']);
-        $this->assertEquals('sub-example', $routes[1]['uri']);
-        $this->assertEquals('example-group', $routes[2]['uri']);
+        $this->assertSame('example', $routes[0]['uri']);
+        $this->assertSame('sub-example', $routes[1]['uri']);
+        $this->assertSame('example-group', $routes[2]['uri']);
 
         foreach ($routes as $route) {
             $this->assertArrayHasKey('path', $route);
@@ -216,11 +212,11 @@ class RouteListCommandTest extends TestCase
         $routes = json_decode($output, true);
 
         $this->assertCount(3, $routes);
-        $this->assertEquals('example', $routes[0]['uri']);
+        $this->assertSame('example', $routes[0]['uri']);
         $this->assertEquals(['exampleMiddleware'], $routes[0]['middleware']);
-        $this->assertEquals('example-group', $routes[1]['uri']);
+        $this->assertSame('example-group', $routes[1]['uri']);
         $this->assertEquals(['Middleware 5', 'Middleware 1', 'Middleware 4', 'Middleware 2', 'Middleware 3'], $routes[1]['middleware']);
-        $this->assertEquals('sub-example', $routes[2]['uri']);
+        $this->assertSame('sub-example', $routes[2]['uri']);
         $this->assertEquals(['exampleMiddleware'], $routes[2]['middleware']);
     }
 
@@ -232,9 +228,37 @@ class RouteListCommandTest extends TestCase
         $routes = json_decode($output, true);
 
         $this->assertCount(1, $routes);
-        $this->assertEquals('example-group', $routes[0]['uri']);
+        $this->assertSame('example-group', $routes[0]['uri']);
         $this->assertEquals(['web', 'auth'], $routes[0]['middleware']);
         $this->assertStringContainsString('RouteListCommandTest.php:', $routes[0]['path']);
+    }
+
+    public function testJsonOutputIsEmptyArrayWhenNoRoutesMatch()
+    {
+        $this->app->call('route:list', ['--json' => true, '--path' => 'missing']);
+
+        $this->assertSame('[]', trim($this->app->output()));
+    }
+
+    public function testJsonOutputIsEmptyArrayWhenApplicationHasNoRoutes()
+    {
+        $laravel = new \Illuminate\Foundation\Application(__DIR__);
+        $router = new Router(new \Illuminate\Events\Dispatcher($laravel));
+
+        $laravel->instance(Kernel::class, new Kernel($laravel, $router));
+
+        $command = new RouteListCommand($router);
+        $command->setLaravel($laravel);
+
+        $app = new Application(
+            $laravel,
+            new \Illuminate\Events\Dispatcher($laravel),
+            'testing',
+        );
+        $app->addCommands([$command]);
+        $app->call('route:list', ['--json' => true]);
+
+        $this->assertSame('[]', trim($app->output()));
     }
 
     public function testClosureRouteShowsPathInCli()
@@ -252,7 +276,7 @@ class RouteListCommandTest extends TestCase
     public function testControllerRoutePathIsNull()
     {
         $laravel = new \Illuminate\Foundation\Application(__DIR__);
-        $router = new Router(m::mock('Illuminate\Events\Dispatcher'));
+        $router = new Router(new \Illuminate\Events\Dispatcher($laravel));
 
         $kernel = new class($laravel, $router) extends Kernel
         {
@@ -268,7 +292,7 @@ class RouteListCommandTest extends TestCase
 
         $app = new Application(
             $laravel,
-            m::mock(Dispatcher::class, ['dispatch' => null, 'fire' => null]),
+            new \Illuminate\Events\Dispatcher($laravel),
             'testing',
         );
         $app->addCommands([$command]);

@@ -6,7 +6,8 @@ use Illuminate\Contracts\Filesystem\FileNotFoundException;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\LazyCollection;
 use Illuminate\Testing\Assert;
-use Mockery as m;
+use JMac\Testing\Double;
+use JMac\Testing\Integrations\PHPUnit\VerifiesDoubles;
 use PHPUnit\Framework\Attributes\AfterClass;
 use PHPUnit\Framework\Attributes\BeforeClass;
 use PHPUnit\Framework\Attributes\RequiresOperatingSystem;
@@ -18,6 +19,8 @@ use function Orchestra\Testbench\terminate;
 
 class FilesystemTest extends TestCase
 {
+    use VerifiesDoubles;
+
     private static $tempDir;
 
     #[BeforeClass]
@@ -39,8 +42,6 @@ class FilesystemTest extends TestCase
     {
         $files = new Filesystem;
         $files->deleteDirectory(self::$tempDir, $preserve = true);
-
-        parent::tearDown();
     }
 
     public function testGetRetrievesFiles()
@@ -79,8 +80,7 @@ class FilesystemTest extends TestCase
 
     public function testLinesThrowsExceptionNonexisitingFile()
     {
-        $this->expectException(FileNotFoundException::class);
-        $this->expectExceptionMessage('File does not exist at path '.__DIR__.'/unknown-file.txt.');
+        $this->expectExceptionObject(new FileNotFoundException('File does not exist at path '.__DIR__.'/unknown-file.txt.'));
 
         (new Filesystem)->lines(__DIR__.'/unknown-file.txt');
     }
@@ -201,6 +201,71 @@ class FilesystemTest extends TestCase
     {
         $files = new Filesystem;
         $this->assertTrue($files->missing(self::$tempDir.'/file.txt'));
+    }
+
+    public function testExistsReturnsFalseForPharUri()
+    {
+        $files = new Filesystem;
+        $this->assertFalse($files->exists('phar:///some/archive.phar/entry'));
+        $this->assertFalse($files->exists('PHAR:///some/archive.phar/entry'));
+    }
+
+    public function testIsFileReturnsFalseForPharUri()
+    {
+        $files = new Filesystem;
+        $this->assertFalse($files->isFile('phar:///some/archive.phar/entry'));
+        $this->assertFalse($files->isFile('PHAR:///some/archive.phar/entry'));
+    }
+
+    public function testGetThrowsExceptionForPharUri()
+    {
+        $files = new Filesystem;
+        $this->expectException(FileNotFoundException::class);
+        $files->get('phar:///some/archive.phar/entry');
+    }
+
+    #[RequiresPhpExtension('phar')]
+    public function testFilesInsideTheRunningPharCanBeRead()
+    {
+        $phar = self::$tempDir.'/app.phar';
+
+        file_put_contents(self::$tempDir.'/run.php', '<?php
+            require '.var_export(realpath(__DIR__.'/../../vendor/autoload.php'), true).';
+            require __DIR__."/Filesystem.php";
+
+            $files = new class extends Illuminate\Filesystem\Filesystem
+            {
+                public function allows($path)
+                {
+                    return ! $this->hasDangerousStreamWrapper($path);
+                }
+            };
+
+            $running = Phar::running();
+
+            echo $files->get($running."/file.txt"), "|", $files->get($running."/dir/file.txt"), "|", json_encode([
+                $files->allows($running."\\\\file.txt"),
+                $files->allows($running."\\\\dir/file.txt"),
+                $files->allows($running."\\\\dir\\\\file.txt"),
+                $files->allows($running.".evil/file.txt"),
+                $files->allows($running."X/file.txt"),
+                $files->allows($running."X\\\\file.txt"),
+                $files->exists("phar:///some/archive.phar/entry"),
+            ]);
+        ');
+
+        file_put_contents(self::$tempDir.'/build.php', '<?php
+            $phar = new Phar('.var_export($phar, true).');
+            $phar->addFile('.var_export(realpath(__DIR__.'/../../src/Illuminate/Filesystem/Filesystem.php'), true).', "Filesystem.php");
+            $phar->addFile('.var_export(self::$tempDir.'/run.php', true).', "run.php");
+            $phar->addFromString("file.txt", "Hello from phar");
+            $phar->addFromString("dir/file.txt", "Hello from nested");
+            $phar->setStub(\'<?php Phar::mapPhar("app.phar"); require "phar://app.phar/run.php"; __HALT_COMPILER();\');
+        ');
+
+        exec(escapeshellarg(PHP_BINARY).' -d phar.readonly=0 '.escapeshellarg(self::$tempDir.'/build.php'));
+
+        $this->assertSame('Hello from phar|Hello from nested|[true,true,true,false,false,false,false]', exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($phar)));
     }
 
     public function testDeleteDirectory()
@@ -325,15 +390,14 @@ class FilesystemTest extends TestCase
         file_put_contents(self::$tempDir.'/tmp6/foo.txt', '');
         mkdir(self::$tempDir.'/tmp7', 0777, true);
 
-        $files = m::mock(Filesystem::class)->makePartial();
-        $files->shouldReceive('deleteDirectory')->once()->andReturn(false);
+        $files = Double::for(Filesystem::class)->passthru();
+        $files->expects('deleteDirectory')->returns(false);
         $this->assertFalse($files->moveDirectory(self::$tempDir.'/tmp6', self::$tempDir.'/tmp7', true));
     }
 
     public function testGetThrowsExceptionNonexisitingFile()
     {
-        $this->expectException(FileNotFoundException::class);
-        $this->expectExceptionMessage('File does not exist at path '.self::$tempDir.'/unknown-file.txt.');
+        $this->expectExceptionObject(new FileNotFoundException('File does not exist at path '.self::$tempDir.'/unknown-file.txt.'));
 
         (new Filesystem)->get(self::$tempDir.'/unknown-file.txt');
     }
@@ -347,8 +411,7 @@ class FilesystemTest extends TestCase
 
     public function testGetRequireThrowsExceptionNonExistingFile()
     {
-        $this->expectException(FileNotFoundException::class);
-        $this->expectExceptionMessage('File does not exist at path '.self::$tempDir.'/unknown-file.txt.');
+        $this->expectExceptionObject(new FileNotFoundException('File does not exist at path '.self::$tempDir.'/unknown-file.txt.'));
 
         (new Filesystem)->getRequire(self::$tempDir.'/unknown-file.txt');
     }
@@ -590,8 +653,7 @@ class FilesystemTest extends TestCase
 
     public function testRequireOnceThrowsExceptionNonexisitingFile()
     {
-        $this->expectException(FileNotFoundException::class);
-        $this->expectExceptionMessage('File does not exist at path '.__DIR__.'/unknown-file.txt.');
+        $this->expectExceptionObject(new FileNotFoundException('File does not exist at path '.__DIR__.'/unknown-file.txt.'));
 
         (new Filesystem)->requireOnce(__DIR__.'/unknown-file.txt');
     }
@@ -725,6 +787,6 @@ class FilesystemTest extends TestCase
         $allFiles = $files->allFiles($dirPath);
 
         $this->assertCount(1, $allFiles);
-        $this->assertEquals('test.txt', $allFiles[0]->getFilename());
+        $this->assertSame('test.txt', $allFiles[0]->getFilename());
     }
 }
