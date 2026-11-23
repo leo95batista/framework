@@ -2,8 +2,11 @@
 
 namespace Illuminate\Tests\Http\Middleware;
 
+use Illuminate\Config\Repository;
+use Illuminate\Container\Container;
 use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
+use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 
 class TrustProxiesTest extends TestCase
@@ -14,6 +17,145 @@ class TrustProxiesTest extends TestCase
      * @var int
      */
     protected $headerAll = Request::HEADER_X_FORWARDED_FOR | Request::HEADER_X_FORWARDED_HOST | Request::HEADER_X_FORWARDED_PORT | Request::HEADER_X_FORWARDED_PROTO | Request::HEADER_X_FORWARDED_PREFIX | Request::HEADER_X_FORWARDED_AWS_ELB;
+
+    /** {@inheritdoc} */
+    #[\Override]
+    protected function setUp(): void
+    {
+        unset($_ENV['LARAVEL_CLOUD'], $_SERVER['LARAVEL_CLOUD'], $_ENV['VAPOR_SSM_PATH']);
+
+        parent::setUp();
+    }
+
+    /** {@inheritdoc} */
+    #[\Override]
+    protected function tearDown(): void
+    {
+        unset($_ENV['LARAVEL_CLOUD'], $_SERVER['LARAVEL_CLOUD'], $_ENV['VAPOR_SSM_PATH']);
+
+        parent::tearDown();
+    }
+
+    #[TestWith(['example.on-forge.com', false, false, false])]
+    #[TestWith(['example.on-vapor.com', false, false, false])]
+    #[TestWith(['example.on-forge.com', true, false, true])]
+    #[TestWith(['example.on-vapor.com', false, true, true])]
+    #[TestWith(['example.on-forge.com', false, true, false])]
+    #[TestWith(['example.on-vapor.com', true, false, false])]
+    #[TestWith(['example.com', true, false, false])]
+    #[TestWith(['example.com', false, true, false])]
+    #[TestWith(['example.on-forge.com.attacker.com', true, false, false])]
+    #[TestWith(['example.on-vapor.com.attacker.com', false, true, false])]
+    public function test_platform_proxy_detection_requires_matching_environment_and_host($host, $forge, $vapor, $trusted)
+    {
+        if ($vapor) {
+            $_ENV['VAPOR_SSM_PATH'] = '/vapor/environment';
+        }
+
+        $container = Container::getInstance();
+        Container::setInstance(new Container)->instance('config', new Repository);
+
+        try {
+            $request = $this->createProxiedRequest();
+            $request->headers->set('Host', $host);
+
+            if ($forge) {
+                $request->server->set('FORGE_SERVER_ID', '123');
+            }
+
+            (new TrustProxies)->handle($request, function ($request) use ($host, $trusted) {
+                $this->assertSame($trusted ? ['0.0.0.0/0', '::/0'] : [], $request->getTrustedProxies());
+                $this->assertSame($trusted ? '173.174.200.38' : '192.168.10.10', $request->ip());
+                $this->assertSame($trusted, $request->isSecure());
+                $this->assertSame($host, $request->getHost());
+                $this->assertSame($trusted ? 443 : 80, $request->getPort());
+                $this->assertSame($trusted ? '/prefix' : '', $request->getBaseUrl());
+                $this->assertSame($trusted ? null : 'serversforhackers.com', $request->headers->get('X-Forwarded-Host'));
+            });
+        } finally {
+            Container::setInstance($container);
+        }
+    }
+
+    #[TestWith(['example.on-forge.com'])]
+    #[TestWith(['example.on-vapor.com'])]
+    public function test_client_supplied_platform_headers_do_not_enable_proxy_trust($host)
+    {
+        $container = Container::getInstance();
+        Container::setInstance(new Container)->instance('config', new Repository);
+
+        try {
+            $request = $this->createProxiedRequest([
+                'HTTP_FORGE_SERVER_ID' => '123',
+                'HTTP_VAPOR_SSM_PATH' => '/vapor/environment',
+            ]);
+            $request->headers->set('Host', $host);
+
+            (new TrustProxies)->handle($request, function ($request) use ($host) {
+                $this->assertSame([], $request->getTrustedProxies());
+                $this->assertSame('192.168.10.10', $request->ip());
+                $this->assertFalse($request->isSecure());
+                $this->assertSame('http://'.$host, $request->getSchemeAndHttpHost());
+            });
+        } finally {
+            Container::setInstance($container);
+        }
+    }
+
+    #[TestWith(['example.on-forge.com', true, false, true])]
+    #[TestWith(['example.on-vapor.com', false, true, true])]
+    #[TestWith(['example.on-forge.com', false, false, false])]
+    #[TestWith(['example.on-vapor.com', false, false, false])]
+    public function test_explicit_proxy_configuration_takes_precedence_over_platform_detection($host, $forge, $vapor, $platform)
+    {
+        if ($vapor) {
+            $_ENV['VAPOR_SSM_PATH'] = '/vapor/environment';
+        }
+
+        $container = Container::getInstance();
+        Container::setInstance(new Container)->instance('config', new Repository([
+            'trustedproxy' => ['proxies' => ['192.168.10.11']],
+        ]));
+
+        try {
+            $request = $this->createProxiedRequest();
+            $request->headers->set('Host', $host);
+
+            if ($forge) {
+                $request->server->set('FORGE_SERVER_ID', '123');
+            }
+
+            (new TrustProxies)->handle($request, function ($request) use ($platform) {
+                $this->assertSame(['192.168.10.11'], $request->getTrustedProxies());
+                $this->assertSame('192.168.10.10', $request->ip());
+                $this->assertFalse($request->isSecure());
+                $this->assertSame($platform ? null : 'serversforhackers.com', $request->headers->get('X-Forwarded-Host'));
+            });
+        } finally {
+            Container::setInstance($container);
+        }
+    }
+
+    public function test_laravel_cloud_still_trusts_the_calling_proxy_by_default()
+    {
+        $_SERVER['LARAVEL_CLOUD'] = '1';
+
+        $container = Container::getInstance();
+        Container::setInstance(new Container)->instance('config', new Repository);
+
+        try {
+            $request = $this->createProxiedRequest();
+
+            (new TrustProxies)->handle($request, function ($request) {
+                $this->assertSame(['0.0.0.0/0', '::/0'], $request->getTrustedProxies());
+                $this->assertSame('173.174.200.38', $request->ip());
+                $this->assertTrue($request->isSecure());
+                $this->assertSame('serversforhackers.com', $request->getHost());
+            });
+        } finally {
+            Container::setInstance($container);
+        }
+    }
 
     /**
      * Test that Symfony does indeed NOT trust X-Forwarded-*
@@ -42,7 +184,7 @@ class TrustProxiesTest extends TestCase
     public function test_does_trust_trusted_proxy()
     {
         $req = $this->createProxiedRequest();
-        $req->setTrustedProxies(['192.168.10.10'], $this->headerAll);
+        $req::setTrustedProxies(['192.168.10.10'], $this->headerAll);
 
         $this->assertSame('173.174.200.38', $req->getClientIp(), 'Assert trusted proxy x-forwarded-for header used');
         $this->assertSame('https', $req->getScheme(), 'Assert trusted proxy x-forwarded-proto header used');
@@ -76,6 +218,24 @@ class TrustProxiesTest extends TestCase
 
         $trustedProxy->handle($request, function ($request) {
             $this->assertSame('173.174.200.38', $request->getClientIp(), 'Assert trusted proxy x-forwarded-for header used with wildcard proxy setting');
+        });
+    }
+
+    /**
+     * Test that the wildcard trusts proxies in an IPv6 forwarded chain, so the
+     * left-most client IP is returned rather than an intermediate IPv6 proxy.
+     */
+    public function test_trusted_proxy_sets_trusted_proxies_with_wildcard_and_ipv6_chain()
+    {
+        $trustedProxy = $this->createTrustedProxy($this->headerAll, '*');
+        $request = $this->createProxiedRequest([
+            'REMOTE_ADDR' => '2001:db8::1',
+            'HTTP_X_FORWARDED_FOR' => '173.174.200.38, 2001:db8::2, 2001:db8::3',
+        ]);
+
+        $trustedProxy->handle($request, function ($request) {
+            $this->assertSame('173.174.200.38', $request->getClientIp(),
+                'Assert IPv6 proxies in the forwarded chain are trusted with wildcard proxy setting');
         });
     }
 
@@ -163,9 +323,9 @@ class TrustProxiesTest extends TestCase
 
         $forwardedFor = [
             '192.0.2.2',
-            '192.0.2.199, 192.0.2.2',
-            '192.0.2.199,192.0.2.2',
-            '99.99.99.99,192.0.2.199,192.0.2.2',
+            '192.0.2.2, 192.0.2.199',
+            '192.0.2.2,192.0.2.199',
+            '192.0.2.2,99.99.99.99,192.0.2.199',
         ];
 
         foreach ($forwardedFor as $forwardedForHeader) {
@@ -173,6 +333,28 @@ class TrustProxiesTest extends TestCase
 
             $trustedProxy->handle($request, function ($request) use ($forwardedForHeader) {
                 $this->assertSame('192.0.2.2', $request->getClientIp(), 'Assert sets the '.$forwardedForHeader);
+            });
+        }
+    }
+
+    /**
+     * Test Forwarded header with multiple IP addresses, with * wildcard trusting of all proxies.
+     */
+    public function test_get_client_ip_with_multiple_ip_addresses_all_proxies_are_trusted_using_forwarded_header()
+    {
+        $trustedProxy = $this->createTrustedProxy(Request::HEADER_FORWARDED, '*');
+
+        $forwarded = [
+            'for=192.0.2.2',
+            'for=192.0.2.2,for=192.0.2.199',
+            'for=192.0.2.2,for=99.99.99.99,for=192.0.2.199',
+        ];
+
+        foreach ($forwarded as $forwardedHeader) {
+            $request = $this->createProxiedRequest(['HTTP_FORWARDED' => $forwardedHeader, 'HTTP_X_FORWARDED_FOR' => '']);
+
+            $trustedProxy->handle($request, function ($request) use ($forwardedHeader) {
+                $this->assertSame('192.0.2.2', $request->getClientIp(), 'Assert sets the '.$forwardedHeader);
             });
         }
     }
@@ -346,27 +528,27 @@ class TrustProxiesTest extends TestCase
             $this->assertEquals($request->getTrustedHeaderSet(), $this->headerAll,
                 'Assert trusted proxy used all "X-Forwarded-*" header');
 
-            $this->assertEquals($request->getTrustedProxies(), ['192.168.1.1', '192.168.1.2'],
+            $this->assertEquals(['192.168.1.1', '192.168.1.2'], $request->getTrustedProxies(),
                 'Assert trusted proxy using proxies as string separated by comma.');
         });
 
         // or, if your proxy instead uses the "Forwarded" header
         $trustedProxy = $this->createTrustedProxy('HEADER_FORWARDED', '192.168.1.1, 192.168.1.2');
         $trustedProxy->handle($request, function (Request $request) {
-            $this->assertEquals($request->getTrustedHeaderSet(), Request::HEADER_FORWARDED,
+            $this->assertEquals(Request::HEADER_FORWARDED, $request->getTrustedHeaderSet(),
                 'Assert trusted proxy used forwarded header');
 
-            $this->assertEquals($request->getTrustedProxies(), ['192.168.1.1', '192.168.1.2'],
+            $this->assertEquals(['192.168.1.1', '192.168.1.2'], $request->getTrustedProxies(),
                 'Assert trusted proxy using proxies as string separated by comma.');
         });
 
         // or, if you're using AWS ELB
         $trustedProxy = $this->createTrustedProxy('HEADER_X_FORWARDED_AWS_ELB', '192.168.1.1, 192.168.1.2');
         $trustedProxy->handle($request, function (Request $request) {
-            $this->assertEquals($request->getTrustedHeaderSet(), Request::HEADER_X_FORWARDED_AWS_ELB,
+            $this->assertEquals(Request::HEADER_X_FORWARDED_AWS_ELB, $request->getTrustedHeaderSet(),
                 'Assert trusted proxy used AWS ELB header');
 
-            $this->assertEquals($request->getTrustedProxies(), ['192.168.1.1', '192.168.1.2'],
+            $this->assertEquals(['192.168.1.1', '192.168.1.2'], $request->getTrustedProxies(),
                 'Assert trusted proxy using proxies as string separated by comma.');
         });
     }
@@ -396,7 +578,7 @@ class TrustProxiesTest extends TestCase
         // which is likely something like this:
         $request = Request::create('http://localhost:8888/tag/proxy', 'GET', [], [], [], $serverOverrides, null);
         // Need to make sure these haven't already been set
-        $request->setTrustedProxies([], $this->headerAll);
+        $request::setTrustedProxies([], $this->headerAll);
 
         return $request;
     }

@@ -1,0 +1,68 @@
+<?php
+
+namespace Illuminate\Tests\Auth;
+
+use Illuminate\Auth\Passwords\PasswordBroker;
+use Illuminate\Auth\Passwords\PasswordBrokerManager;
+use Illuminate\Config\Repository as Config;
+use Illuminate\Container\Container;
+use JMac\Testing\Double;
+use JMac\Testing\Integrations\PHPUnit\VerifiesDoubles;
+use PHPUnit\Framework\TestCase;
+
+class AuthPasswordBrokerManagerTest extends TestCase
+{
+    use VerifiesDoubles;
+
+    public function testBrokerCanResolveBackedEnum(): void
+    {
+        $app = $this->getApp();
+
+        $broker = Double::for(PasswordBroker::class);
+
+        $manager = Double::for(PasswordBrokerManager::class)->passthru(new PasswordBrokerManager($app));
+        $manager->expects('resolve')->with('users')->returns($broker);
+
+        $result1 = $manager->broker(PasswordBrokerName::Users);
+        $result2 = $manager->broker('users');
+
+        $this->assertSame($broker, $result1);
+        $this->assertSame($result1, $result2);
+    }
+
+    public function testSetDefaultDriverAcceptsBackedEnum(): void
+    {
+        $app = $this->getApp();
+
+        $manager = new PasswordBrokerManager($app);
+        $manager->setDefaultDriver(PasswordBrokerName::Users);
+
+        $this->assertSame('users', $app['config']['auth.defaults.passwords']);
+    }
+
+    protected function getApp(): Container
+    {
+        $app = new Container;
+
+        $app->singleton('config', fn () => new Config([
+            'auth' => [
+                'defaults' => ['passwords' => 'users'],
+                'passwords' => [
+                    'users' => [
+                        'provider' => 'users',
+                        'table' => 'password_reset_tokens',
+                        'expire' => 60,
+                        'throttle' => 60,
+                    ],
+                ],
+            ],
+        ]));
+
+        return $app;
+    }
+}
+
+enum PasswordBrokerName: string
+{
+    case Users = 'users';
+}

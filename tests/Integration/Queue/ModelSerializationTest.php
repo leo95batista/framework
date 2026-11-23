@@ -13,6 +13,8 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Queue\Attributes\WithoutRelations;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Tests\Integration\Queue\Fixtures\TypedPropertyCollectionTestClass;
+use Illuminate\Tests\Integration\Queue\Fixtures\TypedPropertyTestClass;
 use LogicException;
 use Orchestra\Testbench\Attributes\WithConfig;
 use Orchestra\Testbench\TestCase;
@@ -40,6 +42,7 @@ class ModelSerializationTest extends TestCase
         Schema::create('users', function (Blueprint $table) {
             $table->increments('id');
             $table->string('email');
+            $table->string('ulid')->nullable();
         });
 
         Schema::connection('custom')->create('users', function (Blueprint $table) {
@@ -71,7 +74,6 @@ class ModelSerializationTest extends TestCase
         });
     }
 
-    #[\Override]
     protected function tearDown(): void
     {
         Relation::morphMap([], false);
@@ -138,8 +140,7 @@ class ModelSerializationTest extends TestCase
 
     public function testItFailsIfModelsOnMultiConnections()
     {
-        $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('Queueing collections with multiple model connections is not supported.');
+        $this->expectExceptionObject(new LogicException('Queueing collections with multiple model connections is not supported.'));
 
         $user = ModelSerializationTestUser::on('custom')->create([
             'email' => 'mohamed@laravel.com',
@@ -356,6 +357,29 @@ class ModelSerializationTest extends TestCase
         $this->assertSame('mohamed@laravel.com', $unserialized->users->last()->email);
     }
 
+    public function testItSerializesACollectionUsingQueueableIdentifiers()
+    {
+        $firstUser = ModelSerializationTestQueueableUser::create([
+            'email' => 'mohamed@laravel.com',
+            'ulid' => '01KAV6RF9H3W4X7C2QPMJ8N5TY',
+        ]);
+        $secondUser = ModelSerializationTestQueueableUser::create([
+            'email' => 'taylor@laravel.com',
+            'ulid' => '01KAV6S3E6F8R9V2Z7YCN4MPTW',
+        ]);
+
+        $serialized = serialize(new CollectionSerializationTestClass(
+            new Collection([$secondUser, $firstUser])
+        ));
+
+        $unserialized = unserialize($serialized);
+
+        $this->assertSame(
+            [$secondUser->getKey(), $firstUser->getKey()],
+            $unserialized->users->modelKeys()
+        );
+    }
+
     public function testItCanUnserializeACollectionInCorrectOrderAndHandleDeletedModels()
     {
         ModelSerializationTestUser::create(['email' => '2@laravel.com']);
@@ -392,7 +416,7 @@ class ModelSerializationTest extends TestCase
 
     public function testItSerializesTypedProperties()
     {
-        require_once __DIR__.'/typed-properties.php';
+        require_once __DIR__.'/Fixtures/typed-properties.php';
 
         $defaultConnection = config('database.default');
 
@@ -469,7 +493,7 @@ class ModelSerializationTest extends TestCase
         $unserialized = unserialize($serialized);
 
         $this->assertFalse($unserialized->user->relationLoaded('roles'));
-        $this->assertEquals('hello', $unserialized->value->value);
+        $this->assertSame('hello', $unserialized->value->value);
     }
 
     #[WithConfig('database.default', 'testing')]
@@ -485,7 +509,7 @@ class ModelSerializationTest extends TestCase
         $unserialized = unserialize($serialized);
 
         $this->assertFalse($unserialized->user->relationLoaded('roles'));
-        $this->assertEquals('hello', $unserialized->value->value);
+        $this->assertSame('hello', $unserialized->value->value);
     }
 
     public function test_serialization_types_empty_custom_eloquent_collection()
@@ -616,6 +640,21 @@ class ModelSerializationTestUser extends Model
     public $table = 'users';
     public $guarded = [];
     public $timestamps = false;
+}
+
+class ModelSerializationTestQueueableUser extends ModelSerializationTestUser
+{
+    public function getQueueableId()
+    {
+        return $this->ulid;
+    }
+
+    public function newQueryForRestoration($ids)
+    {
+        return is_array($ids)
+            ? $this->newQueryWithoutScopes()->whereIn('ulid', $ids)
+            : $this->newQueryWithoutScopes()->where('ulid', $ids);
+    }
 }
 
 class ModelSerializationTestCustomUserCollection extends Collection

@@ -20,14 +20,31 @@ class TranslationMessageSelectorTest extends TestCase
     {
         $selector = new MessageSelector;
 
-        $this->assertEquals('many', $selector->choose('{0} zero|{1} one|[2,*] many', 2.75, 'pl'));
+        $this->assertSame('many', $selector->choose('{0} zero|{1} one|[2,*] many', 2.75, 'pl'));
     }
 
     public function testChoosePluralizesFloats()
     {
         $selector = new MessageSelector;
 
-        $this->assertEquals('plural', $selector->choose('singular|plural', 0.5, 'en'));
+        $this->assertSame('plural', $selector->choose('singular|plural', 0.5, 'en'));
+    }
+
+    public function testChooseUsesAbsoluteValueForPluralRules()
+    {
+        $selector = new MessageSelector;
+
+        $this->assertSame('item', $selector->choose('item|items', -1, 'en'));
+        $this->assertSame('items', $selector->choose('item|items', -2, 'en'));
+
+        $this->assertSame('файл', $selector->choose('файл|файла|файлов', -1, 'ru'));
+        $this->assertSame('файла', $selector->choose('файл|файла|файлов', -2, 'ru'));
+        $this->assertSame('файлов', $selector->choose('файл|файла|файлов', -5, 'ru'));
+        $this->assertSame('файл', $selector->choose('файл|файла|файлов', -21, 'ru'));
+
+        $this->assertSame('minus one', $selector->choose('{-1} minus one|[*,*] other', -1, 'en'));
+        $this->assertSame('items', $selector->choose('item|items', '-3', 'en'));
+        $this->assertSame('items', $selector->choose('item|items', null, 'en'));
     }
 
     public static function chooseTestData()
@@ -84,7 +101,9 @@ class TranslationMessageSelectorTest extends TestCase
             ['second', 'first|second|third', 0],
 
             ['first', '{0}  first | { 1 } second', 0],
+            ['second', '{0}  first | { 1 } second', 1],
             ['first', '[4,*]first | [1,3]second', 100],
+            ['second', '[4,*]first | [1,3]second', 1],
 
             ['[first](//example.com)', '[first](//example.com)|[second](//test.com)', 1],
             ['[second](//test.com)', '[first](//example.com)|[second](//test.com)', 2],

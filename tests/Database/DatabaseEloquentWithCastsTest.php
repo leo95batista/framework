@@ -13,8 +13,6 @@ class DatabaseEloquentWithCastsTest extends TestCase
 {
     protected function setUp(): void
     {
-        parent::setUp();
-
         $db = new DB;
 
         $db->addConnection([
@@ -39,6 +37,18 @@ class DatabaseEloquentWithCastsTest extends TestCase
         $this->schema()->create('unique_times', function ($table) {
             $table->increments('id');
             $table->time('time')->unique();
+            $table->timestamps();
+        });
+
+        $this->schema()->create('with_casts_users', function ($table) {
+            $table->increments('id');
+            $table->timestamps();
+        });
+
+        $this->schema()->create('with_casts_transactions', function ($table) {
+            $table->increments('id');
+            $table->unsignedInteger('with_casts_user_id');
+            $table->text('data');
             $table->timestamps();
         });
     }
@@ -77,6 +87,37 @@ class DatabaseEloquentWithCastsTest extends TestCase
             ->createOrFirst(['time' => '07:30']);
 
         $this->assertSame($time1->id, $time2->id);
+    }
+
+    public function testWithCastsOnClonedQueryDoesNotAffectOriginalQuery()
+    {
+        Time::create(['time' => '07:30']);
+
+        $query = Time::query();
+
+        $this->assertIsString($query->clone()->withCasts(['time' => 'string'])->first()->time);
+        $this->assertInstanceOf(Carbon::class, $query->first()->time);
+    }
+
+    public function testWithCastsOnRelationIsAppliedWhenCreatingRelatedModels()
+    {
+        $user = WithCastsUser::create();
+
+        $transaction = $user->transactions()
+            ->withCasts(['data' => 'array'])
+            ->create(['data' => ['ip' => '127.0.0.1']]);
+
+        $this->assertSame(['ip' => '127.0.0.1'], $transaction->data);
+        $this->assertSame('{"ip":"127.0.0.1"}', $transaction->fresh()->getRawOriginal('data'));
+    }
+
+    public function testWithCastsOnRelationIsAppliedWhenQueryingRelatedModels()
+    {
+        $user = WithCastsUser::create();
+        $user->transactions()->create(['data' => '{"ip":"127.0.0.1"}']);
+
+        $this->assertSame(['ip' => '127.0.0.1'], $user->transactions()->withCasts(['data' => 'array'])->first()->data);
+        $this->assertIsString($user->transactions()->first()->data);
     }
 
     public function testThrowsExceptionIfCastableAttributeWasNotRetrievedAndPreventMissingAttributesIsEnabled()
@@ -131,4 +172,19 @@ class UniqueTime extends Eloquent
     protected $casts = [
         'time' => 'datetime',
     ];
+}
+
+class WithCastsUser extends Eloquent
+{
+    protected $guarded = [];
+
+    public function transactions()
+    {
+        return $this->hasMany(WithCastsTransaction::class);
+    }
+}
+
+class WithCastsTransaction extends Eloquent
+{
+    protected $guarded = [];
 }

@@ -14,15 +14,12 @@ class RedisConnectorTest extends TestCase
 
     protected function setUp(): void
     {
-        parent::setUp();
         $this->setUpRedis();
     }
 
     protected function tearDown(): void
     {
         $this->tearDownRedis();
-
-        parent::tearDown();
     }
 
     public function testDefaultConfiguration()
@@ -251,7 +248,7 @@ class RedisConnectorTest extends TestCase
             ],
         ]);
         $predisClient1 = $predis1->client();
-        $this->assertEquals('test_default_options_', $predisClient1->getOptions()->prefix->getPrefix());
+        $this->assertSame('test_default_options_', $predisClient1->getOptions()->prefix->getPrefix());
 
         $predis2 = new RedisManager(new Application, 'predis', [
             'cluster' => false,
@@ -271,7 +268,7 @@ class RedisConnectorTest extends TestCase
             ],
         ]);
         $predisClient2 = $predis2->client();
-        $this->assertEquals('test_default_config_', $predisClient2->getOptions()->prefix->getPrefix());
+        $this->assertSame('test_default_config_', $predisClient2->getOptions()->prefix->getPrefix());
 
         $phpRedis1 = new RedisManager(new Application, 'phpredis', [
             'cluster' => false,
@@ -290,7 +287,7 @@ class RedisConnectorTest extends TestCase
             ],
         ]);
         $phpRedisClient1 = $phpRedis1->connection()->client();
-        $this->assertEquals('test_default_options_', $phpRedisClient1->getOption(Redis::OPT_PREFIX));
+        $this->assertSame('test_default_options_', $phpRedisClient1->getOption(Redis::OPT_PREFIX));
 
         $phpRedis2 = new RedisManager(new Application, 'phpredis', [
             'cluster' => false,
@@ -310,6 +307,6 @@ class RedisConnectorTest extends TestCase
             ],
         ]);
         $phpRedisClient2 = $phpRedis2->connection()->client();
-        $this->assertEquals('test_default_config_', $phpRedisClient2->getOption(Redis::OPT_PREFIX));
+        $this->assertSame('test_default_config_', $phpRedisClient2->getOption(Redis::OPT_PREFIX));
     }
 }

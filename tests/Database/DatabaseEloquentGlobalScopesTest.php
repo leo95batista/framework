@@ -13,8 +13,6 @@ class DatabaseEloquentGlobalScopesTest extends TestCase
 {
     protected function setUp(): void
     {
-        parent::setUp();
-
         tap(new DB)->addConnection([
             'driver' => 'sqlite',
             'database' => ':memory:',
@@ -23,9 +21,8 @@ class DatabaseEloquentGlobalScopesTest extends TestCase
 
     protected function tearDown(): void
     {
+        Model::clearBootedModels();
         Model::unsetConnectionResolver();
-
-        parent::tearDown();
     }
 
     public function testGlobalScopeIsApplied()
@@ -41,7 +38,7 @@ class DatabaseEloquentGlobalScopesTest extends TestCase
         $model = new EloquentGlobalScopesTestModel;
         $query = $model->newQuery()->withoutGlobalScope(ActiveScope::class);
         $this->assertSame('select * from "table"', $query->toSql());
-        $this->assertEquals([], $query->getBindings());
+        $this->assertSame([], $query->getBindings());
     }
 
     public function testClassNameGlobalScopeIsApplied()
@@ -97,7 +94,7 @@ class DatabaseEloquentGlobalScopesTest extends TestCase
         $model = new EloquentClosureGlobalScopesTestModel;
         $query = $model->newQuery()->withoutGlobalScope('active_scope');
         $this->assertSame('select * from "table" order by "name" asc', $query->toSql());
-        $this->assertEquals([], $query->getBindings());
+        $this->assertSame([], $query->getBindings());
     }
 
     public function testGlobalScopeCanBeRemovedAfterTheQueryIsExecuted()
@@ -109,7 +106,7 @@ class DatabaseEloquentGlobalScopesTest extends TestCase
 
         $query->withoutGlobalScope('active_scope');
         $this->assertSame('select * from "table" order by "name" asc', $query->toSql());
-        $this->assertEquals([], $query->getBindings());
+        $this->assertSame([], $query->getBindings());
     }
 
     public function testAllGlobalScopesCanBeRemoved()
@@ -117,11 +114,11 @@ class DatabaseEloquentGlobalScopesTest extends TestCase
         $model = new EloquentClosureGlobalScopesTestModel;
         $query = $model->newQuery()->withoutGlobalScopes();
         $this->assertSame('select * from "table"', $query->toSql());
-        $this->assertEquals([], $query->getBindings());
+        $this->assertSame([], $query->getBindings());
 
         $query = EloquentClosureGlobalScopesTestModel::withoutGlobalScopes();
         $this->assertSame('select * from "table"', $query->toSql());
-        $this->assertEquals([], $query->getBindings());
+        $this->assertSame([], $query->getBindings());
     }
 
     public function testAllGlobalScopesCanBeRemovedExceptSpecified()

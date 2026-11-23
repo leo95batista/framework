@@ -5,25 +5,58 @@ namespace Illuminate\Tests\Broadcasting;
 use Exception;
 use Illuminate\Broadcasting\BroadcastEvent;
 use Illuminate\Broadcasting\InteractsWithBroadcasting;
+use Illuminate\Broadcasting\UniqueBroadcastEvent;
 use Illuminate\Contracts\Broadcasting\Broadcaster;
 use Illuminate\Contracts\Broadcasting\Factory as BroadcastingFactory;
-use Mockery as m;
+use Illuminate\Queue\Attributes\UniqueFor;
+use JMac\Testing\Double;
+use JMac\Testing\Integrations\PHPUnit\VerifiesDoubles;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 
 class BroadcastEventTest extends TestCase
 {
+    use VerifiesDoubles;
+
+    public function testUniqueBroadcastEventReadsUniqueForAttribute()
+    {
+        $job = new UniqueBroadcastEvent(new TestBroadcastEventWithUniqueForAttribute);
+
+        $this->assertSame(60, $job->uniqueFor);
+    }
+
+    public function testUniqueBroadcastEventReadsInheritedUniqueForAttribute()
+    {
+        $job = new UniqueBroadcastEvent(new TestBroadcastEventWithInheritedUniqueFor);
+
+        $this->assertSame(60, $job->uniqueFor);
+    }
+
+    public function testUniqueBroadcastEventUniqueForMethodOverridesAttribute()
+    {
+        $job = new UniqueBroadcastEvent(new TestBroadcastEventWithUniqueForMethod);
+
+        $this->assertSame(120, $job->uniqueFor);
+    }
+
+    public function testUniqueBroadcastEventChildPropertyOverridesInheritedAttribute()
+    {
+        $job = new UniqueBroadcastEvent(new TestBroadcastEventWithUniqueForProperty);
+
+        $this->assertSame(180, $job->uniqueFor);
+    }
+
     public function testBasicEventBroadcastParameterFormatting()
     {
-        $broadcaster = m::mock(Broadcaster::class);
+        $broadcaster = Double::for(Broadcaster::class);
 
-        $broadcaster->shouldReceive('broadcast')->once()->with(
+        $broadcaster->expects('broadcast')->with(
             ['test-channel'], TestBroadcastEvent::class, ['firstName' => 'Taylor', 'lastName' => 'Otwell', 'collection' => ['foo' => 'bar']]
         );
 
-        $manager = m::mock(BroadcastingFactory::class);
+        $manager = Double::for(BroadcastingFactory::class);
 
-        $manager->shouldReceive('connection')->once()->with(null)->andReturn($broadcaster);
+        $manager->expects('connection')->with(null)->returns($broadcaster);
 
         $event = new TestBroadcastEvent;
 
@@ -32,15 +65,15 @@ class BroadcastEventTest extends TestCase
 
     public function testManualParameterSpecification()
     {
-        $broadcaster = m::mock(Broadcaster::class);
+        $broadcaster = Double::for(Broadcaster::class);
 
-        $broadcaster->shouldReceive('broadcast')->once()->with(
+        $broadcaster->expects('broadcast')->with(
             ['test-channel'], TestBroadcastEventWithManualData::class, ['name' => 'Taylor', 'socket' => null]
         );
 
-        $manager = m::mock(BroadcastingFactory::class);
+        $manager = Double::for(BroadcastingFactory::class);
 
-        $manager->shouldReceive('connection')->once()->with(null)->andReturn($broadcaster);
+        $manager->expects('connection')->with(null)->returns($broadcaster);
 
         $event = new TestBroadcastEventWithManualData;
 
@@ -49,13 +82,13 @@ class BroadcastEventTest extends TestCase
 
     public function testSpecificBroadcasterGiven()
     {
-        $broadcaster = m::mock(Broadcaster::class);
+        $broadcaster = Double::for(Broadcaster::class);
 
-        $broadcaster->shouldReceive('broadcast')->once();
+        $broadcaster->expects('broadcast');
 
-        $manager = m::mock(BroadcastingFactory::class);
+        $manager = Double::for(BroadcastingFactory::class);
 
-        $manager->shouldReceive('connection')->once()->with('log')->andReturn($broadcaster);
+        $manager->expects('connection')->with('log')->returns($broadcaster);
 
         $event = new TestBroadcastEventWithSpecificBroadcaster;
 
@@ -64,22 +97,56 @@ class BroadcastEventTest extends TestCase
 
     public function testSpecificChannelsPerConnection()
     {
-        $broadcaster = m::mock(Broadcaster::class);
+        $broadcaster = Double::for(Broadcaster::class);
 
-        $broadcaster->shouldReceive('broadcast')->once()->with(
+        $broadcaster->expects('broadcast')->with(
             ['first-channel'], TestBroadcastEventWithChannelsPerConnection::class, ['firstName' => 'Taylor', 'lastName' => 'Otwell', 'collection' => ['foo' => 'bar']]
         );
 
-        $broadcaster->shouldReceive('broadcast')->once()->with(
+        $broadcaster->expects('broadcast')->with(
             ['second-channel'], TestBroadcastEventWithChannelsPerConnection::class, ['firstName' => 'Taylor']
         );
 
-        $manager = m::mock(BroadcastingFactory::class);
+        $manager = Double::for(BroadcastingFactory::class);
 
-        $manager->shouldReceive('connection')->once()->with('first_connection')->andReturn($broadcaster);
-        $manager->shouldReceive('connection')->once()->with('second_connection')->andReturn($broadcaster);
+        $manager->expects('connection')->with('first_connection')->returns($broadcaster);
+        $manager->expects('connection')->with('second_connection')->returns($broadcaster);
 
         $event = new TestBroadcastEventWithChannelsPerConnection;
+
+        (new BroadcastEvent($event))->handle($manager);
+    }
+
+    public function testBroadcastAsStringIsUsedAsEventName()
+    {
+        $broadcaster = Double::for(Broadcaster::class);
+
+        $broadcaster->expects('broadcast')->with(
+            ['test-channel'], 'custom-name', ['firstName' => 'Taylor', 'lastName' => 'Otwell', 'collection' => ['foo' => 'bar']]
+        );
+
+        $manager = Double::for(BroadcastingFactory::class);
+
+        $manager->expects('connection')->with(null)->returns($broadcaster);
+
+        $event = new TestBroadcastEventWithStringName;
+
+        (new BroadcastEvent($event))->handle($manager);
+    }
+
+    public function testBroadcastAsBackedEnumResolvesToValue()
+    {
+        $broadcaster = Double::for(Broadcaster::class);
+
+        $broadcaster->expects('broadcast')->with(
+            ['test-channel'], 'custom-enum-name', ['firstName' => 'Taylor', 'lastName' => 'Otwell', 'collection' => ['foo' => 'bar']]
+        );
+
+        $manager = Double::for(BroadcastingFactory::class);
+
+        $manager->expects('connection')->with(null)->returns($broadcaster);
+
+        $event = new TestBroadcastEventWithEnumName;
 
         (new BroadcastEvent($event))->handle($manager);
     }
@@ -99,23 +166,65 @@ class BroadcastEventTest extends TestCase
         $this->assertSame(['foo', 'bar'], $job->middleware());
     }
 
+    public function testDeletesWhenMissingModelsByDefault()
+    {
+        $job = new BroadcastEvent(new TestBroadcastEvent);
+
+        $this->assertTrue($job->deleteWhenMissingModels);
+    }
+
+    public function testDeletingWhenMissingModelsCanBeDisabled()
+    {
+        $event = new class
+        {
+            public $deleteWhenMissingModels = false;
+        };
+
+        $job = new BroadcastEvent($event);
+
+        $this->assertFalse($job->deleteWhenMissingModels);
+    }
+
     public function testMiddlewareProxiesFailedHandlerFromUnderlyingEvent()
     {
         $event = new class
         {
+            public $failedWith;
+
             public function failed(?Throwable $e = null): void
             {
-                $e->validateCall();
+                $this->failedWith = $e;
             }
         };
 
         $job = new BroadcastEvent($event);
 
-        $exception = m::mock(Exception::class);
-        $exception->expects('validateCall');
+        $job->failed($exception = new Exception);
 
-        $job->failed($exception);
+        $this->assertSame($exception, $event->failedWith);
     }
+}
+
+#[UniqueFor(60)]
+class TestBroadcastEventWithUniqueForAttribute extends TestBroadcastEvent
+{
+}
+
+class TestBroadcastEventWithInheritedUniqueFor extends TestBroadcastEventWithUniqueForAttribute
+{
+}
+
+class TestBroadcastEventWithUniqueForMethod extends TestBroadcastEventWithUniqueForAttribute
+{
+    public function uniqueFor(): int
+    {
+        return 120;
+    }
+}
+
+class TestBroadcastEventWithUniqueForProperty extends TestBroadcastEventWithUniqueForAttribute
+{
+    public $uniqueFor = 180;
 }
 
 class TestBroadcastEvent
@@ -134,6 +243,27 @@ class TestBroadcastEvent
     {
         return ['test-channel'];
     }
+}
+
+class TestBroadcastEventWithStringName extends TestBroadcastEvent
+{
+    public function broadcastAs()
+    {
+        return 'custom-name';
+    }
+}
+
+class TestBroadcastEventWithEnumName extends TestBroadcastEvent
+{
+    public function broadcastAs()
+    {
+        return TestBroadcastEventName::Custom;
+    }
+}
+
+enum TestBroadcastEventName: string
+{
+    case Custom = 'custom-enum-name';
 }
 
 class TestBroadcastEventWithManualData extends TestBroadcastEvent

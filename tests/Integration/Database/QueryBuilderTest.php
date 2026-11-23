@@ -138,8 +138,8 @@ class QueryBuilderTest extends DatabaseTestCase
 
         $rows = DB::table('accounting')->get();
 
-        $this->assertEquals(1.5, $rows[0]->wallet_1);
-        $this->assertEquals(1.5, $rows[1]->wallet_1);
+        $this->assertSame(1.5, (float) $rows[0]->wallet_1);
+        $this->assertSame(1.5, (float) $rows[1]->wallet_1);
 
         Schema::drop('accounting');
     }
@@ -583,6 +583,15 @@ class QueryBuilderTest extends DatabaseTestCase
             (object) ['title' => 'Foo Post', 'content' => 'Lorem Ipsum.'],
             (object) ['title' => 'Bar Post', 'content' => 'Lorem Ipsum.'],
         ]);
+    }
+
+    public function testGetCountForPaginationWithGroupedUnionAndLimit()
+    {
+        $query = DB::table('posts')->select('title')->groupBy('title')
+            ->unionAll(DB::table('posts')->select('title')->where('title', 'Foo Post'))
+            ->limit(1);
+
+        $this->assertSame(3, $query->getCountForPagination());
     }
 
     public function testChunkMap()

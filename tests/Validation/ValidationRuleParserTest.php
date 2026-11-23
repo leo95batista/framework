@@ -2,6 +2,7 @@
 
 namespace Illuminate\Tests\Validation;
 
+use Illuminate\Contracts\Validation\ParameterizedRule;
 use Illuminate\Support\Fluent;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationRuleParser;
@@ -9,6 +10,37 @@ use PHPUnit\Framework\TestCase;
 
 class ValidationRuleParserTest extends TestCase
 {
+    /**
+     * Test that parameterized rules are prepared without being stringified.
+     */
+    public function testParameterizedRulesAreNotStringified()
+    {
+        $rule = new class implements ParameterizedRule
+        {
+            /**
+             * Get the rule name followed by its parameters.
+             */
+            public function toArray(): array
+            {
+                return ['accepted_if', 'other', 'foo\\",bar'];
+            }
+
+            /**
+             * Reject serialization to verify the structured parsing path.
+             */
+            public function __toString(): string
+            {
+                throw new \LogicException('This rule must not be stringified.');
+            }
+        };
+
+        $parser = new ValidationRuleParser([]);
+
+        $this->assertSame(['field' => [$rule]], $parser->explode(['field' => $rule])->rules);
+        $this->assertSame(['field' => [$rule]], $parser->explode(['field' => [$rule]])->rules);
+        $this->assertSame(['AcceptedIf', ['other', 'foo\\",bar']], ValidationRuleParser::parse($rule));
+    }
+
     public function testConditionalRulesAreProperlyExpandedAndFiltered()
     {
         $isAdmin = true;
@@ -187,7 +219,7 @@ class ValidationRuleParserTest extends TestCase
             'users.*.name' => Rule::forEach(function ($value, $attribute, $data, $context) {
                 $this->assertSame('Taylor Otwell', $value);
                 $this->assertSame('users.0.name', $attribute);
-                $this->assertEquals($data['users.0.name'], 'Taylor Otwell');
+                $this->assertSame('Taylor Otwell', $data['users.0.name']);
                 $this->assertEquals(['name' => 'Taylor Otwell', 'email' => 'taylor@laravel.com'], $context);
 
                 return [Rule::requiredIf(true)];
@@ -217,7 +249,7 @@ class ValidationRuleParserTest extends TestCase
         ]);
 
         $this->assertEquals(['name' => ['required']], $results->rules);
-        $this->assertEquals([], $results->implicitAttributes);
+        $this->assertSame([], $results->implicitAttributes);
     }
 
     public function testExplodeHandlesForwardSlashesInWildcardRule()
@@ -466,6 +498,48 @@ class ValidationRuleParserTest extends TestCase
             'number' => [
                 'numeric',
                 'max:100',
+            ],
+        ], $results->rules);
+    }
+
+    public function testExplodeHandlesArrayRuleWithAdditionalRules()
+    {
+        $parser = (new ValidationRuleParser([
+            'items' => ['foo'],
+        ]));
+
+        $rules = [
+            'items' => Rule::array()->min(1)->max(5),
+        ];
+
+        $results = $parser->explode($rules);
+
+        $this->assertEquals([
+            'items' => [
+                'array',
+                'min:1',
+                'max:5',
+            ],
+        ], $results->rules);
+    }
+
+    public function testExplodeHandlesArrayRuleWithAdditionalRulesInAnArray()
+    {
+        $parser = (new ValidationRuleParser([
+            'items' => ['key_1' => 'foo'],
+        ]));
+
+        $rules = [
+            'items' => ['required', Rule::array(['key_1', 'key_2'])->between(1, 2)],
+        ];
+
+        $results = $parser->explode($rules);
+
+        $this->assertEquals([
+            'items' => [
+                'required',
+                'array:key_1,key_2',
+                'between:1,2',
             ],
         ], $results->rules);
     }

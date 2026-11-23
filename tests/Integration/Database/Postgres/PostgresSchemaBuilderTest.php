@@ -111,13 +111,47 @@ class PostgresSchemaBuilderTest extends PostgresTestCase
         $this->assertFalse(Schema::hasView('private.foo'));
     }
 
+    public function testDropIndexOnSchemaQualifiedTable()
+    {
+        foreach (['public.table', 'private.table'] as $name) {
+            Schema::create($name, function (Blueprint $table) {
+                $table->string('name');
+                $table->index('name', 'table_name_index');
+            });
+        }
+
+        Schema::table('private.table', function (Blueprint $table) {
+            $table->dropIndex('table_name_index');
+        });
+
+        $this->assertTrue(Schema::hasIndex('public.table', 'table_name_index'));
+        $this->assertFalse(Schema::hasIndex('private.table', 'table_name_index'));
+    }
+
+    public function testRenameIndexOnSchemaQualifiedTable()
+    {
+        foreach (['public.table', 'private.table'] as $name) {
+            Schema::create($name, function (Blueprint $table) {
+                $table->string('name');
+                $table->index('name', 'table_name_index');
+            });
+        }
+
+        Schema::table('private.table', function (Blueprint $table) {
+            $table->renameIndex('table_name_index', 'renamed_index');
+        });
+
+        $this->assertTrue(Schema::hasIndex('public.table', 'table_name_index'));
+        $this->assertTrue(Schema::hasIndex('private.table', 'renamed_index'));
+    }
+
     public function testAddTableCommentOnNewTable()
     {
         Schema::create('public.posts', function (Blueprint $table) {
             $table->comment('This is a comment');
         });
 
-        $this->assertEquals('This is a comment', DB::selectOne("select obj_description('public.posts'::regclass, 'pg_class')")->obj_description);
+        $this->assertSame('This is a comment', DB::selectOne("select obj_description('public.posts'::regclass, 'pg_class')")->obj_description);
     }
 
     public function testAddTableCommentOnExistingTable()
@@ -131,7 +165,7 @@ class PostgresSchemaBuilderTest extends PostgresTestCase
             $table->comment('This is a new comment');
         });
 
-        $this->assertEquals('This is a new comment', DB::selectOne("select obj_description('public.posts'::regclass, 'pg_class')")->obj_description);
+        $this->assertSame('This is a new comment', DB::selectOne("select obj_description('public.posts'::regclass, 'pg_class')")->obj_description);
     }
 
     public function testGetTables()
@@ -227,5 +261,44 @@ class PostgresSchemaBuilderTest extends PostgresTestCase
         $this->assertContains('public_table_created_at_index', $indexNames);
         $this->assertContains('public_table_body_fulltext', $indexNames);
         $this->assertContains('table_raw_index', $indexNames);
+    }
+
+    public function testDropAllViewsIgnoresViewsOwnedByExtensions()
+    {
+        DB::statement('create extension if not exists pg_stat_statements schema public');
+        DB::statement('create view public.foo (id) as select 1');
+
+        try {
+            $this->assertFalse(Schema::hasView('public.pg_stat_statements'));
+
+            Schema::dropAllViews();
+
+            $this->assertFalse(Schema::hasView('public.foo'));
+            $this->assertTrue((bool) DB::scalar("select exists (select 1 from pg_views where viewname = 'pg_stat_statements')"));
+        } finally {
+            DB::statement('drop extension if exists pg_stat_statements');
+        }
+    }
+
+    public function testDropAllTablesIgnoresTablesOwnedByExtensions()
+    {
+        Schema::create('public.table', function (Blueprint $table) {
+            $table->increments('id');
+        });
+
+        DB::statement('create table public.extension_table (id integer)');
+        DB::statement('alter extension plpgsql add table public.extension_table');
+
+        try {
+            Schema::dropAllTables();
+
+            $this->artisan('migrate:install');
+
+            $this->assertFalse(Schema::hasTable('public.table'));
+            $this->assertTrue(Schema::hasTable('public.extension_table'));
+        } finally {
+            DB::statement('alter extension plpgsql drop table public.extension_table');
+            DB::statement('drop table public.extension_table');
+        }
     }
 }
